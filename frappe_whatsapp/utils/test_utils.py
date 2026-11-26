@@ -169,6 +169,7 @@ def _count_notification_queries(fn):
     return len(queries)
 
 
+# Plataforma #219 (joffreAriasG/app_univia_plataforma)
 class TestNotificationsMapCache(IntegrationTestCase):
     """The notifications map is read from cache and invalidated on change.
 
