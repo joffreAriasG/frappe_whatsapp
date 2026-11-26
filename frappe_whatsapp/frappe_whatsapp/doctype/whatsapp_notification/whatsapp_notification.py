@@ -352,6 +352,14 @@ class WhatsAppNotification(Document):
         """On delete remove from schedule."""
         clear_notifications_map_cache()
 
+    def after_delete(self):
+        """Clear again once the row is gone.
+
+        The doc_events "*" on_trash hook runs after on_trash, while the row
+        still exists, and rebuilds the map with this notification in it.
+        """
+        clear_notifications_map_cache()
+
 
     def format_number(self, number):
         """Format number."""
