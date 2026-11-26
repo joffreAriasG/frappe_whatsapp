@@ -10,7 +10,7 @@ from frappe.integrations.utils import make_post_request
 from frappe.desk.form.utils import get_pdf_link
 from frappe.utils import add_to_date, nowdate, datetime
 
-from frappe_whatsapp.utils import get_whatsapp_account
+from frappe_whatsapp.utils import clear_notifications_map_cache, get_whatsapp_account
 
 
 class WhatsAppNotification(Document):
@@ -340,9 +340,17 @@ class WhatsAppNotification(Document):
             }).insert(ignore_permissions=True)
 
 
+    def on_update(self):
+        """Rebuild the notifications map on the next doc event."""
+        clear_notifications_map_cache()
+
+    def after_rename(self, old, new, merge=False):
+        """Rebuild the notifications map on the next doc event."""
+        clear_notifications_map_cache()
+
     def on_trash(self):
         """On delete remove from schedule."""
-        frappe.cache().delete_value("whatsapp_notification_map")
+        clear_notifications_map_cache()
 
 
     def format_number(self, number):

@@ -72,11 +72,43 @@ def _send_whatsapp_notification(notification_name, doctype, docname, commit=Fals
         )
 
 
+NOTIFICATION_MAP_CACHE_KEY = "whatsapp_notification_map"
+
+
 def get_notifications_map():
-    """Get mapping."""
+    """Get mapping of DocType -> event -> notification names.
+
+    Read from cache; the table is only queried when the cache is empty.
+    WhatsApp Notification clears the key on update, rename and trash.
+    """
     if frappe.flags.in_patch and not frappe.db.table_exists("WhatsApp Notification"):
         return {}
 
+    return frappe.cache().get_value(
+        NOTIFICATION_MAP_CACHE_KEY, generator=_build_notifications_map
+    ) or {}
+
+
+def clear_notifications_map_cache():
+    """Drop the cached notifications map so the next event rebuilds it.
+
+    Cleared now, and again after commit or rollback where Frappe supports
+    it, so another worker cannot cache the map from before the commit, and
+    a rolled-back notification does not stay in the cache.
+    """
+    frappe.cache().delete_value(NOTIFICATION_MAP_CACHE_KEY)
+    for callbacks in ("after_commit", "after_rollback"):
+        manager = getattr(frappe.db, callbacks, None)
+        if manager is not None:
+            manager.add(_delete_notifications_map_cache)
+
+
+def _delete_notifications_map_cache():
+    frappe.cache().delete_value(NOTIFICATION_MAP_CACHE_KEY)
+
+
+def _build_notifications_map():
+    """Build the mapping from enabled DocType Event notifications."""
     notification_map = {}
     enabled_whatsapp_notifications = frappe.get_all(
         "WhatsApp Notification",
@@ -90,8 +122,6 @@ def get_notifications_map():
             ).setdefault(
                 notification.doctype_event, []
             ).append(notification.name)
-
-    frappe.cache().set_value("whatsapp_notification_map", notification_map)
 
     return notification_map
 
