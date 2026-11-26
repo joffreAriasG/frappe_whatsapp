@@ -151,6 +151,111 @@ class TestGetNotificationsMap(IntegrationTestCase):
         self.assertIn("Test Utils Map Notif", result["User"]["After Save"])
 
 
+def _count_notification_queries(fn):
+    """Run fn and return how many SQL queries touched `tabWhatsApp Notification`."""
+    original_sql = frappe.db.sql
+    queries = []
+
+    def spy(query, *args, **kwargs):
+        if "WhatsApp Notification" in str(query):
+            queries.append(str(query))
+        return original_sql(query, *args, **kwargs)
+
+    frappe.db.sql = spy
+    try:
+        fn()
+    finally:
+        frappe.db.sql = original_sql
+    return len(queries)
+
+
+class TestNotificationsMapCache(IntegrationTestCase):
+    """The notifications map is read from cache and invalidated on change.
+
+    Plataforma #219: every doc event of every DocType used to query
+    `WhatsApp Notification` and write Redis without ever reading the cache.
+    """
+
+    NOTIFICATION = "Test 219 Cache Notif"
+    TEMPLATE = "test_219_cache_template-en"
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        if not frappe.db.exists("WhatsApp Account", "Test 219 Account"):
+            frappe.get_doc({
+                "doctype": "WhatsApp Account",
+                "account_name": "Test 219 Account",
+                "status": "Active",
+                "url": "https://graph.facebook.com",
+                "version": "v17.0",
+                "phone_id": "test_219_phone_id",
+                "business_id": "test_219_business_id",
+                "app_id": "test_219_app_id",
+                "webhook_verify_token": "test_219_verify_token",
+            }).insert(ignore_permissions=True)
+        if not frappe.db.exists("WhatsApp Templates", cls.TEMPLATE):
+            frappe.get_doc({
+                "doctype": "WhatsApp Templates",
+                "template_name": "test_219_cache_template",
+                "actual_name": "test_219_cache_template",
+                "template": "Hello",
+                "category": "TRANSACTIONAL",
+                "language": frappe.db.get_value("Language", {"language_code": "en"}) or "en",
+                "language_code": "en",
+                "whatsapp_account": "Test 219 Account",
+                "status": "APPROVED",
+                "id": "test_219_tmpl_id",
+            }).db_insert()
+        frappe.db.commit()  # nosemgrep: frappe-manual-commit -- test fixture must be visible to later queries
+
+    def setUp(self):
+        if frappe.db.exists("WhatsApp Notification", self.NOTIFICATION):
+            frappe.delete_doc("WhatsApp Notification", self.NOTIFICATION, force=True)
+        frappe.cache().delete_value("whatsapp_notification_map")
+
+    def _notification_names(self):
+        return get_notifications_map().get("User", {}).get("After Save", [])
+
+    def test_cached_map_skips_query_for_doctype_without_notifications(self):
+        """Criterion 1: with the map cached, a doc event does not query the table."""
+        get_notifications_map()  # warm the cache
+        doc = frappe.get_doc("Role", "System Manager")
+
+        count = _count_notification_queries(
+            lambda: run_server_script_for_doc_event(doc, "on_update")
+        )
+
+        self.assertEqual(count, 0)
+
+    def test_cache_invalidated_on_create_disable_and_delete(self):
+        """Criterion 2: changes to WhatsApp Notification are seen by the next event."""
+        self.assertNotIn(self.NOTIFICATION, self._notification_names())  # warm the cache
+
+        notification = frappe.get_doc({
+            "doctype": "WhatsApp Notification",
+            "notification_name": self.NOTIFICATION,
+            "notification_type": "DocType Event",
+            "reference_doctype": "User",
+            "field_name": "mobile_no",
+            "doctype_event": "After Save",
+            "template": self.TEMPLATE,
+            "disabled": 0,
+        }).insert(ignore_permissions=True)
+        self.assertIn(self.NOTIFICATION, self._notification_names())
+
+        notification.disabled = 1
+        notification.save(ignore_permissions=True)
+        self.assertNotIn(self.NOTIFICATION, self._notification_names())
+
+        notification.disabled = 0
+        notification.save(ignore_permissions=True)
+        self.assertIn(self.NOTIFICATION, self._notification_names())
+
+        notification.delete(ignore_permissions=True)
+        self.assertNotIn(self.NOTIFICATION, self._notification_names())
+
+
 class TestRunServerScriptForDocEvent(IntegrationTestCase):
     """Tests for run_server_script_for_doc_event."""
 
